@@ -1,0 +1,83 @@
+{
+  "name": "@mutedeck/plugin-client",
+  "version": "2.0.0-alpha.0",
+  "description": "Client for the MuteDeck plugin protocol v2 (WebSocket + HTTP), with v1 fallback",
+  "license": "UNLICENSED",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "hosts/*": [
+        "./dist/hosts/*.d.ts"
+      ],
+      "*": [
+        "./dist/index.d.ts"
+      ]
+    }
+  },
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./hosts/browser": {
+      "import": {
+        "types": "./dist/hosts/browser.d.ts",
+        "default": "./dist/hosts/browser.js"
+      },
+      "require": {
+        "types": "./dist/hosts/browser.d.cts",
+        "default": "./dist/hosts/browser.cjs"
+      }
+    },
+    "./hosts/streamdeck": {
+      "import": {
+        "types": "./dist/hosts/streamdeck.d.ts",
+        "default": "./dist/hosts/streamdeck.js"
+      },
+      "require": {
+        "types": "./dist/hosts/streamdeck.d.cts",
+        "default": "./dist/hosts/streamdeck.cjs"
+      }
+    },
+    "./hosts/raycast": {
+      "import": {
+        "types": "./dist/hosts/raycast.d.ts",
+        "default": "./dist/hosts/raycast.js"
+      },
+      "require": {
+        "types": "./dist/hosts/raycast.d.cts",
+        "default": "./dist/hosts/raycast.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "generate": "openapi-typescript ../../spec/openapi.yaml -o src/generated/schema.ts",
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@mutedeck/mock-server": "*",
+    "@types/node": "^20.14.0",
+    "@types/ws": "^8.5.12",
+    "openapi-typescript": "^7.4.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0",
+    "ws": "^8.18.0"
+  }
+}

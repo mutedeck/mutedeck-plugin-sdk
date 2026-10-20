@@ -1,0 +1,20 @@
+{
+  "name": "mutedeck-plugin-sdk",
+  "private": true,
+  "description": "Client packages and a mock server for the MuteDeck plugin protocol v2",
+  "workspaces": [
+    "packages/js",
+    "packages/mock-server"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "sync-spec": "node scripts/sync-spec.mjs",
+    "generate": "npm run generate -w @mutedeck/plugin-client",
+    "build": "npm run build -w @mutedeck/mock-server && npm run build -w @mutedeck/plugin-client",
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm test -w @mutedeck/plugin-client",
+    "test:dotnet": "dotnet test packages/dotnet/MuteDeck.PluginClient.sln"
+  }
+}

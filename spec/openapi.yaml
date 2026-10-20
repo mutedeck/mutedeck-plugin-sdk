@@ -1,0 +1,980 @@
+openapi: 3.1.0
+info:
+  title: MuteDeck Plugin API v2 (internal)
+  version: 2.0.0-draft.1
+  summary: Authenticated plugin protocol for MuteDeck (HTTP + WebSocket).
+  description: |-
+    INTERNAL DRAFT. Not bundled with the app, not served by swagger-ui and not
+    linked from public docs. It is merged into the public
+    `resources/mutedeck-api-spec.yaml` once v2 is stable.
+
+    Plan and rationale: `docs/plugin-protocol-v2-plan.md`.
+
+    ## Transports
+
+    | Transport | Address | v1 (legacy) | v2 |
+    |---|---|---|---|
+    | HTTP | `http://<host>:3491` | `/v1/*` | `/v2/*` |
+    | WebSocket | `ws://<host>:3492`, `wss://<host>:3493` | any path other than `/v2` | path `/v2` |
+
+    v1 keeps working, subject to the user's legacy policy ("Plugins without
+    authentication": allow / this computer only / block).
+
+    ## WebSocket v2 (not expressible in OpenAPI; read this section)
+
+    The WebSocket messages are JSON text frames. Their shapes are defined under
+    `components/schemas` (prefixed `Ws`). The flow is:
+
+    1. Connect to `ws://<host>:3492/v2` (or `wss://<host>:3493/v2`).
+    2. The **first** message must be `WsHello`. Anything else before a
+       successful `WsWelcome` (`status: ok`) is answered with `WsError`
+       (`status: 401`, `reason: not_authenticated`) and otherwise ignored.
+       A malformed hello gets `WsError` (`reason: bad_hello`) and the socket is
+       closed.
+    3. The server answers with `WsWelcome`:
+       - `status: ok`: the token was valid. The server immediately pushes a full
+         `WsStatusUpdate` and, for `role: controller`, a `WsCustomActionList`.
+       - `status: pending`: no or unknown token. The user is being asked in
+         MuteDeck. The server later pushes `WsApproved` (store the token; the
+         socket is now authenticated and a `WsWelcome` `ok` follows) or
+         `WsDenied` on the same socket. Do **not** re-send hello while pending.
+       Every hello is answered with a `WsWelcome` first, so a client can
+       always tell a v2 server from an old one. A refusal is therefore
+       `WsWelcome pending` followed by `WsDenied`, and an approval is
+       `WsWelcome pending`, `WsApproved`, `WsWelcome ok`.
+       After `WsDenied` the socket accepts a new hello (send it no sooner than
+       `retry_after`); reconnecting works too.
+    4. If the socket drops while pending, the user's decision is kept for that
+       `instance_id` for 120 seconds. The next hello from that instance then
+       gets the same sequence right away (`WsWelcome pending` + `WsApproved` +
+       `WsWelcome ok`, or `WsWelcome pending` + `WsDenied`).
+    5. A revoked or unknown token yields `WsWelcome` `pending`. Discard the
+       stored token and wait for approval.
+    6. When the user revokes a client, any live socket that uses its token
+       gets `WsRevoked` and is closed.
+
+    ### Requests and responses
+
+    After `ok`, the client sends the same action messages as v1 (`WsAction`),
+    without the v1 `source` field (ignored if present). Any client message can
+    carry an `id` (string or integer, at most 64 characters when a string). The
+    direct response to that message echoes it (`WsResponse.id`). Pushed
+    messages (`WsStatusUpdate`, `WsBrowserControl`, `WsRevoked`) never carry an
+    `id`. In v2, unknown actions get `WsResponse` `status: 404`,
+    `reason: unknown_action`; v1 ignores them silently. `keep-alive` is answered
+    only when it carries an `id`. `update-status` reports are never answered.
+    A second hello after `ok` gets `WsError` `bad_request`.
+
+    ### Roles
+
+    - `controller` (Stream Deck, Loupedeck, Touch Portal, Raycast, Companion,
+      Macro Deck): receives `WsStatusUpdate` pushes and sends control actions.
+    - `status-source` (browser extension): sends `update-status` reports for the
+      meeting site it controls and receives `WsBrowserControl` forwards. It does
+      not receive `WsStatusUpdate` pushes.
+
+    ### Falling back to v1 (old MuteDeck)
+
+    An old MuteDeck accepts the `/v2` connection but silently drops the hello.
+    If no `WsWelcome` arrives within **3 seconds**, close the socket, reconnect
+    to the root path, and speak v1 (`identify`). Remember "server is v1" until
+    the next reconnect after a disconnect. Over HTTP, an old MuteDeck answers
+    `/v2/*` with 404 and a body of `{ "error": "Invalid URL."}`.
+
+    ## Authentication over HTTP
+
+    `/v2/*` (except `/v2/pair*`) requires `Authorization: Bearer <token>`.
+    Manual tokens created in MuteDeck Settings also work there. HTTP-only
+    plugins obtain a token through `POST /v2/pair` and poll
+    `GET /v2/pair/{request_id}`.
+
+    v2 HTTP responses use real HTTP status codes; the JSON body still carries a
+    `status` field with the same value. (v1 always answers HTTP 200 and puts the
+    outcome in the body only.)
+
+    ## Limits
+
+    - `client.id`: `[a-z0-9-]`, 1–32 characters
+    - `client.name`: 1–64 characters
+    - versions: `[0-9A-Za-z.+-]`, at most 32 characters
+    - `instance_id`: `[A-Za-z0-9-]`, 8–64 characters (a UUID is recommended)
+    - token: 64 lowercase hex characters
+    - message size: at most 1 MiB
+
+    Fields that exceed these limits are rejected (`bad_hello`), not truncated.
+    Unknown fields (in the hello, in `client`, or in any action) are ignored,
+    so newer plugins can send fields older desktops don't know.
+
+    ## Tokens and connections
+
+    - A token belongs to one `instance_id`: a valid token sent with a
+      different `instance_id` is treated as unknown (`WsWelcome pending`).
+      Over HTTP the token alone identifies the client.
+    - `keep-alive` is accepted while pending too (answered only with an
+      `id`); every other action waits for the approval.
+    - The server does not drop idle authenticated sockets; `keep-alive` is
+      optional (useful for hosts that suspend idle workers, such as MV3
+      service workers). Sockets that never say hello are closed after 30 s.
+    - A `WsWelcome ok` sent in direct reply to a hello (stored token, or an
+      approval already waiting) echoes the hello's `id`; one that follows a
+      live approval does not.
+    - Loopback peers are never rate-limited; remote peers that present bad
+      tokens or get denied repeatedly are blocked for 5 minutes.
+  contact:
+    email: support@mutedeck.com
+servers:
+  - url: http://localhost:3491
+tags:
+  - name: Pairing
+    description: Obtain a token through the in-app approval prompt
+  - name: Meeting Status
+  - name: Meeting Controls
+  - name: Custom Actions
+  - name: Client
+
+security:
+  - bearerAuth: []
+
+paths:
+  /v2/pair:
+    post:
+      tags: [Pairing]
+      summary: Request approval for this client
+      description: |-
+        Shows an approval prompt in MuteDeck. Poll the returned request until it
+        is approved, denied or expired (after 120 seconds). Rate-limited per IP.
+      operationId: requestPairing
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PairRequest'
+            examples:
+              raycast:
+                value:
+                  client:
+                    id: raycast
+                    name: Raycast
+                    version: "1.3.0"
+                    host_app: raycast
+                    host_version: "1.84.2"
+                    os: mac
+                  instance_id: 1d1f8f4e-5f0a-4b5e-9c55-2f8f5a1d3c11
+      responses:
+        '202':
+          description: Prompt queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairPending'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          description: Denied recently for this instance; retry later
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairDenied'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /v2/pair/{request_id}:
+    get:
+      tags: [Pairing]
+      summary: Poll a pairing request
+      description: |-
+        Returns the token exactly once. After a 200 response the request is
+        removed, and later polls get 404.
+      operationId: pollPairing
+      security: []
+      parameters:
+        - in: path
+          name: request_id
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{16,64}$'
+      responses:
+        '200':
+          description: Approved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairApproved'
+        '202':
+          description: Still waiting for the user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairPending'
+        '403':
+          description: Denied or expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v2/whoami:
+    get:
+      tags: [Client]
+      summary: Describe the authenticated client
+      description: Cheap token check. Returns the client record the token belongs to.
+      operationId: whoami
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+      responses:
+        '200':
+          description: Token is valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WhoAmI'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v2/status:
+    get:
+      tags: [Meeting Status]
+      summary: Get the current meeting status
+      operationId: getStatus
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+      responses:
+        '200':
+          description: Current status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HttpStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v2/list-custom-actions:
+    get:
+      tags: [Custom Actions]
+      summary: List configured custom actions
+      operationId: getCustomActions
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+      responses:
+        '200':
+          description: Custom actions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomActionListResponse'
+        '400':
+          $ref: '#/components/responses/ActionRejected'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v2/custom-action:
+    post:
+      tags: [Custom Actions]
+      summary: Trigger a custom action by name
+      operationId: triggerCustomAction
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+        - in: query
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          $ref: '#/components/responses/ActionRejected'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v2/mute:
+    post:
+      tags: [Meeting Controls]
+      summary: Toggle or set mute (falls back to the system microphone outside a call)
+      operationId: mute
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+        - $ref: '#/components/parameters/stateParam'
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          $ref: '#/components/responses/ActionRejected'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v2/video:
+    post:
+      tags: [Meeting Controls]
+      summary: Toggle or set video
+      operationId: video
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+        - $ref: '#/components/parameters/stateParam'
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          $ref: '#/components/responses/ActionRejected'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v2/share:
+    post:
+      tags: [Meeting Controls]
+      summary: Toggle or set screen sharing
+      operationId: share
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+        - $ref: '#/components/parameters/stateParam'
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          $ref: '#/components/responses/ActionRejected'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v2/record:
+    post:
+      tags: [Meeting Controls]
+      summary: Toggle or set recording
+      operationId: record
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+        - $ref: '#/components/parameters/stateParam'
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          $ref: '#/components/responses/ActionRejected'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v2/leave:
+    post:
+      tags: [Meeting Controls]
+      summary: Leave the active meeting
+      operationId: leave
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          $ref: '#/components/responses/ActionRejected'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v2/bring-to-front:
+    post:
+      tags: [Meeting Controls]
+      summary: Bring the active meeting app to the front
+      operationId: bringToFront
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          $ref: '#/components/responses/ActionRejected'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v2/background-blur:
+    post:
+      tags: [Meeting Controls]
+      summary: Toggle background blur (Teams)
+      operationId: backgroundBlur
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          $ref: '#/components/responses/ActionRejected'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v2/raise-hand:
+    post:
+      tags: [Meeting Controls]
+      summary: Raise or lower your hand
+      operationId: raiseHand
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          $ref: '#/components/responses/ActionRejected'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v2/toggle-chat-window:
+    post:
+      tags: [Meeting Controls]
+      summary: Open or close the chat window (Teams)
+      operationId: toggleChatWindow
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          $ref: '#/components/responses/ActionRejected'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v2/react-applause:
+    post:
+      tags: [Meeting Controls]
+      summary: Send an applause reaction
+      operationId: reactApplause
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+      responses: &reactResponses
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          $ref: '#/components/responses/ActionRejected'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v2/react-laugh:
+    post:
+      tags: [Meeting Controls]
+      summary: Send a laugh reaction
+      operationId: reactLaugh
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+      responses: *reactResponses
+  /v2/react-like:
+    post:
+      tags: [Meeting Controls]
+      summary: Send a like reaction
+      operationId: reactLike
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+      responses: *reactResponses
+  /v2/react-love:
+    post:
+      tags: [Meeting Controls]
+      summary: Send a love reaction
+      operationId: reactLove
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+      responses: *reactResponses
+  /v2/react-wow:
+    post:
+      tags: [Meeting Controls]
+      summary: Send a surprised reaction
+      operationId: reactWow
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+      responses: *reactResponses
+  /v2/react-tada:
+    post:
+      tags: [Meeting Controls]
+      summary: Send a celebrate reaction
+      operationId: reactTada
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+      responses: *reactResponses
+  /v2/react-sad:
+    post:
+      tags: [Meeting Controls]
+      summary: Send a sad reaction (Google Meet)
+      operationId: reactSad
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+      responses: *reactResponses
+  /v2/react-thinking:
+    post:
+      tags: [Meeting Controls]
+      summary: Send a thinking reaction (Google Meet)
+      operationId: reactThinking
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+      responses: *reactResponses
+  /v2/react-dislike:
+    post:
+      tags: [Meeting Controls]
+      summary: Send a dislike reaction (Google Meet)
+      operationId: reactDislike
+      parameters:
+        - $ref: '#/components/parameters/clientHeader'
+      responses: *reactResponses
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: 64-character lowercase hex token from pairing or MuteDeck Settings.
+
+  parameters:
+    clientHeader:
+      in: header
+      name: X-MuteDeck-Client
+      required: false
+      description: |-
+        Optional self-description that keeps the client registry current, for
+        example `raycast/1.3.0 (raycast 1.84.2)`. Format:
+        `<client.id>/<client.version> (<host_app> <host_version>)`; every part
+        after the id is optional.
+      schema:
+        type: string
+        maxLength: 160
+    stateParam:
+      in: query
+      name: state
+      required: false
+      schema:
+        type: string
+        enum: [toggle, on, off, active, inactive]
+        default: toggle
+
+  responses:
+    Ok:
+      description: Action accepted
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiResponse'
+          example:
+            status: 200
+    ActionRejected:
+      description: Not in a call, or feature not licensed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiResponse'
+          examples:
+            not-in-a-call:
+              value:
+                status: 400
+                reason: not_in_call
+                message: Request invalid. Not in a call.
+            not-licensed:
+              value:
+                status: 400
+                reason: not_licensed
+                message: Request invalid. Feature not licensed.
+    BadRequest:
+      description: Malformed request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiResponse'
+          example:
+            status: 400
+            reason: bad_request
+            message: Invalid client description.
+    Unauthorized:
+      description: Missing, unknown or revoked token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiResponse'
+          example:
+            status: 401
+            reason: not_authenticated
+            message: Authentication required.
+    NotFound:
+      description: Unknown resource
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiResponse'
+          example:
+            status: 404
+            reason: not_found
+    TooManyRequests:
+      description: Too many pairing requests from this address
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiResponse'
+          example:
+            status: 429
+            reason: rate_limited
+            retry_after: 60
+
+  schemas:
+    # ---------------------------------------------------------------- shared
+    ClientInfo:
+      type: object
+      required: [id, name]
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+          pattern: '^[a-z0-9-]{1,32}$'
+          description: Stable slug; also the usage-stats source.
+          examples: [streamdeck, loupedeck, browser-extension, touch-portal, raycast, companion, macro-deck]
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Display name for the approval prompt and Settings.
+          examples: [Stream Deck]
+        version:
+          $ref: '#/components/schemas/Version'
+        host_app:
+          type: string
+          pattern: '^[a-z0-9-]{1,32}$'
+          description: The software this plugin runs inside.
+          examples: [stream-deck, loupedeck, logi-options-plus, chrome, edge, brave, firefox, safari, touch-portal, raycast, companion, macro-deck]
+        host_version:
+          $ref: '#/components/schemas/Version'
+        os:
+          type: string
+          enum: [mac, windows, linux]
+    Version:
+      type: string
+      pattern: '^[0-9A-Za-z.+-]{1,32}$'
+      examples: ["13.1.0"]
+    InstanceId:
+      type: string
+      pattern: '^[A-Za-z0-9-]{8,64}$'
+      description: Generated once per plugin install and persisted with the token.
+    Token:
+      type: string
+      pattern: '^[0-9a-f]{64}$'
+    RequestId:
+      oneOf:
+        - type: string
+          maxLength: 64
+        - type: integer
+    ApiResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: integer
+        reason:
+          type: string
+          description: Machine-readable; switch on this, not on `message`.
+          enum: [not_authenticated, bad_hello, bad_request, unknown_action, not_in_call, not_licensed, not_found, rate_limited, internal_error]
+        message:
+          type: string
+          description: Human-readable, English, may change.
+        retry_after:
+          type: integer
+          description: Seconds
+    MeetingStatus:
+      type: object
+      description: Same fields as the v1 status (see the public spec).
+      properties:
+        call:
+          type: string
+          enum: [active, inactive, disabled]
+        control:
+          type: string
+          examples: [system, zoom, webex, teams, google-meet]
+        mute:
+          type: string
+          enum: [active, inactive, disabled]
+        video:
+          type: string
+          enum: [active, inactive, disabled]
+        share:
+          type: string
+          enum: [active, inactive, disabled]
+        record:
+          type: string
+          enum: [active, inactive, disabled]
+      additionalProperties: true
+    CustomAction:
+      type: object
+      additionalProperties: true
+      properties:
+        name:
+          type: string
+          description: Pass this to `custom-action`.
+        application:
+          type: string
+          description: Meeting app the action belongs to (user-defined actions)
+        shortcut:
+          type: string
+          description: Keyboard shortcut (user-defined actions)
+        type:
+          type: string
+          enum: [builtin, custom]
+        app_types:
+          type: array
+          items:
+            type: string
+          description: Meeting apps a built-in action supports
+
+    # ---------------------------------------------------------------- HTTP
+    PairRequest:
+      type: object
+      required: [client, instance_id]
+      properties:
+        client:
+          $ref: '#/components/schemas/ClientInfo'
+        instance_id:
+          $ref: '#/components/schemas/InstanceId'
+    PairPending:
+      type: object
+      required: [status, request_id]
+      properties:
+        status:
+          const: pending
+        request_id:
+          type: string
+        poll_after:
+          type: integer
+          description: Seconds to wait before the next poll
+          default: 2
+        expires_in:
+          type: integer
+          description: Seconds until the request expires
+    PairApproved:
+      type: object
+      required: [status, token]
+      properties:
+        status:
+          const: approved
+        token:
+          $ref: '#/components/schemas/Token'
+    PairDenied:
+      type: object
+      required: [status, reason]
+      properties:
+        status:
+          const: denied
+        reason:
+          $ref: '#/components/schemas/DenyReason'
+        retry_after:
+          type: integer
+    DenyReason:
+      type: string
+      enum: [user, expired, busy]
+      description: |-
+        `user`: the user clicked Deny (a new prompt is only shown after
+        `retry_after`). `expired`: nobody answered in time. `busy`: too many
+        prompts queued; retry after `retry_after`.
+    WhoAmI:
+      type: object
+      required: [status, client_id, name]
+      properties:
+        status:
+          const: 200
+        client_id:
+          type: string
+        name:
+          type: string
+        created:
+          type: string
+          format: date-time
+        server_version:
+          type: string
+    HttpStatusResponse:
+      allOf:
+        - $ref: '#/components/schemas/MeetingStatus'
+        - type: object
+          properties:
+            status:
+              const: 200
+            version:
+              type: string
+              description: MuteDeck version
+    CustomActionListResponse:
+      type: object
+      properties:
+        status:
+          const: 200
+        custom_actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/CustomAction'
+
+    # ---------------------------------------------------------------- WebSocket
+    WsHello:
+      type: object
+      required: [action, protocol, client, instance_id, role]
+      properties:
+        action:
+          const: hello
+        protocol:
+          const: 2
+        client:
+          $ref: '#/components/schemas/ClientInfo'
+        instance_id:
+          $ref: '#/components/schemas/InstanceId'
+        role:
+          type: string
+          enum: [controller, status-source]
+        token:
+          $ref: '#/components/schemas/Token'
+        id:
+          $ref: '#/components/schemas/RequestId'
+      examples:
+        - action: hello
+          protocol: 2
+          client:
+            id: streamdeck
+            name: Stream Deck
+            version: "13.1.0"
+            host_app: stream-deck
+            host_version: "6.8.1"
+            os: mac
+          instance_id: 6f1c2e0a-8d6e-4c55-9d0e-0d4a3b7f2a91
+          role: controller
+          token: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+    WsWelcome:
+      type: object
+      required: [action, protocol, status]
+      properties:
+        action:
+          const: welcome
+        protocol:
+          const: 2
+        status:
+          type: string
+          enum: [ok, pending]
+        server_version:
+          type: string
+        licensed:
+          type: boolean
+        id:
+          $ref: '#/components/schemas/RequestId'
+    WsApproved:
+      type: object
+      required: [action, token]
+      properties:
+        action:
+          const: approved
+        token:
+          $ref: '#/components/schemas/Token'
+    WsDenied:
+      type: object
+      required: [action, reason]
+      properties:
+        action:
+          const: denied
+        reason:
+          $ref: '#/components/schemas/DenyReason'
+        retry_after:
+          type: integer
+          description: Seconds before a new hello will prompt the user again
+    WsRevoked:
+      type: object
+      required: [action]
+      properties:
+        action:
+          const: revoked
+    WsError:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            action:
+              const: error
+            id:
+              $ref: '#/components/schemas/RequestId'
+    WsAction:
+      type: object
+      description: |-
+        A control or reporting message. These are the same actions and fields as v1:
+
+        - `toggle_mute`, `toggle_video`, `toggle_share`, `toggle_record` take
+          an optional `state` (`toggle`/`on`/`off`/`active`/`inactive`).
+        - `leave_meeting`, `bring-to-front`, `background-blur`,
+          `toggle-chat-window`, `toggle-participants` and `raise-hand` take no fields.
+        - `react-applause`, `react-laugh`, `react-like`, `react-love`, `react-wow`,
+          `react-tada`, `react-sad`, `react-thinking` and `react-dislike` take no fields.
+        - `list-custom-actions` is answered with `WsCustomActionList`.
+        - `custom-action` takes `name`.
+        - `keep-alive` is answered only when it carries an `id`.
+        - `update-status` is for the `status-source` role only (see
+          `WsBrowserStatusReport`).
+      required: [action]
+      properties:
+        action:
+          type: string
+        id:
+          $ref: '#/components/schemas/RequestId'
+        state:
+          type: string
+          enum: [toggle, on, off, active, inactive]
+        name:
+          type: string
+      additionalProperties: true
+    WsBrowserStatusReport:
+      type: object
+      required: [action, status]
+      properties:
+        action:
+          const: update-status
+        control:
+          type: string
+          description: Meeting site, for example `google-meet` or `teams-web`
+        status:
+          type: string
+          enum: [call, no-call]
+        mute:
+          type: string
+          enum: [muted, unmuted, disabled]
+        video:
+          type: string
+          enum: [started, stopped, disabled]
+        share:
+          type: string
+          enum: [started, stopped, disabled]
+        record:
+          type: string
+          enum: [started, stopped, disabled]
+        custom_svg_path:
+          type: string
+    WsResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            id:
+              $ref: '#/components/schemas/RequestId'
+    WsStatusUpdate:
+      allOf:
+        - type: object
+          required: [action]
+          properties:
+            action:
+              const: update-status
+        - $ref: '#/components/schemas/MeetingStatus'
+    WsCustomActionList:
+      type: object
+      required: [action, status, custom_actions]
+      properties:
+        action:
+          const: list-custom-actions
+        status:
+          const: 200
+        id:
+          $ref: '#/components/schemas/RequestId'
+        custom_actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/CustomAction'
+    WsBrowserControl:
+      type: object
+      description: Pushed to `status-source` clients; the extension performs it on the page.
+      required: [action]
+      properties:
+        action:
+          type: string
+          examples: [toggle_mute, toggle_video, leave_meeting, bring_to_front, custom_action, send_reaction]
+        shortcut:
+          type: string
+        reaction:
+          type: string
+      additionalProperties: true
