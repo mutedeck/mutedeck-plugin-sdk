@@ -1,6 +1,6 @@
 {
   "name": "@mutedeck/plugin-client",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Client for MuteDeck's plugin API: WebSocket protocol v2 with approval-based auth, the HTTP API with optional bearer tokens, and automatic fallback for older MuteDeck versions",
   "license": "MIT",
   "author": "MuteDeck <support@mutedeck.com>",
