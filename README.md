@@ -1,8 +1,6 @@
 # MuteDeck plugin SDK
 
-Client libraries for the **MuteDeck plugin protocol v2**: authenticated WebSocket
-and HTTP access to the MuteDeck desktop app, with automatic fallback to v1 for
-older MuteDeck versions. Each plugin uses these packages instead of writing the handshake itself.
+Client libraries for the **MuteDeck plugin protocol v2**: authenticated WebSocket and HTTP access to the MuteDeck desktop app, with automatic fallback to v1 for older MuteDeck versions. Each plugin uses these packages instead of writing the handshake itself.
 
 | Package | Path | For |
 |---|---|---|
