@@ -2,6 +2,8 @@ name: Publish
 
 # Push a tag like v1.0.0 to publish @mutedeck/plugin-client and
 # @mutedeck/mock-server to npm, and MuteDeck.PluginClient to NuGet.
+# Secrets: NPM_TOKEN (npm automation token), NUGET_USER (nuget.org profile
+# name, for trusted publishing).
 # The tag must match the version in the package files.
 on:
   push:
@@ -10,7 +12,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write # npm provenance
+  id-token: write # npm provenance, NuGet trusted publishing
 
 jobs:
   npm:
@@ -45,7 +47,6 @@ jobs:
 
   nuget:
     runs-on: ubuntu-latest
-    if: ${{ vars.PUBLISH_NUGET == 'true' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -61,4 +62,12 @@ jobs:
           fi
       - run: dotnet test packages/dotnet/MuteDeck.PluginClient.sln -c Release
       - run: dotnet pack packages/dotnet/src/MuteDeck.PluginClient -c Release -o out
-      - run: dotnet nuget push "out/*.nupkg" --api-key "${{ secrets.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json
+      # Trusted publishing: exchange this run's OIDC token for an API key
+      # that is valid for an hour. The nuget.org policy must name this
+      # repository and the workflow file publish.yml.
+      - name: NuGet login
+        uses: NuGet/login@v1
+        id: nuget-login
+        with:
+          user: mutedeck
+      - run: dotnet nuget push "out/*.nupkg" --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json
