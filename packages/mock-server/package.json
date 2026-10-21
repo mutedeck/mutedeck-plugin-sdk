@@ -1,6 +1,6 @@
 {
   "name": "@mutedeck/mock-server",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Programmable fake MuteDeck desktop (WebSocket v1/v2 and the HTTP API) for testing MuteDeck plugins",
   "license": "MIT",
   "author": "MuteDeck <support@mutedeck.com>",

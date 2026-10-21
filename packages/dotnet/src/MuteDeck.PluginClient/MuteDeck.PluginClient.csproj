@@ -10,7 +10,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <PackageId>MuteDeck.PluginClient</PackageId>
-    <Version>1.0.1</Version>
+    <Version>1.0.2</Version>
     <Authors>MuteDeck</Authors>
     <Description>Client for the MuteDeck plugin protocol v2 (WebSocket), with fallback to v1.</Description>
     <PackageTags>mutedeck;plugin;loupedeck;macrodeck</PackageTags>
