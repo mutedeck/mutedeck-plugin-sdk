@@ -1,0 +1,64 @@
+name: Publish
+
+# Push a tag like v1.0.0 to publish @mutedeck/plugin-client and
+# @mutedeck/mock-server to npm, and MuteDeck.PluginClient to NuGet.
+# The tag must match the version in the package files.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write # npm provenance
+
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Check the tag matches the package versions
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          for pkg in packages/js packages/mock-server; do
+            version=$(node -p "require('./$pkg/package.json').version")
+            if [ "$version" != "$tag" ]; then
+              echo "$pkg is $version, tag is $tag" >&2
+              exit 1
+            fi
+          done
+      - run: npm ci
+      - run: npm run build
+      - run: npm run typecheck
+      - run: npm test
+      # mock-server first: plugin-client's tests depend on it
+      - run: npm publish -w @mutedeck/mock-server --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm publish -w @mutedeck/plugin-client --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  nuget:
+    runs-on: ubuntu-latest
+    if: ${{ vars.PUBLISH_NUGET == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Check the tag matches the package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version=$(grep -oPm1 '(?<=<Version>)[^<]+' packages/dotnet/src/MuteDeck.PluginClient/MuteDeck.PluginClient.csproj)
+          if [ "$version" != "$tag" ]; then
+            echo "MuteDeck.PluginClient is $version, tag is $tag" >&2
+            exit 1
+          fi
+      - run: dotnet test packages/dotnet/MuteDeck.PluginClient.sln -c Release
+      - run: dotnet pack packages/dotnet/src/MuteDeck.PluginClient -c Release -o out
+      - run: dotnet nuget push "out/*.nupkg" --api-key "${{ secrets.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json

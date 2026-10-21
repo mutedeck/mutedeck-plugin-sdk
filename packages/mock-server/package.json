@@ -1,26 +1,54 @@
 {
   "name": "@mutedeck/mock-server",
-  "version": "2.0.0-alpha.0",
-  "description": "Programmable fake MuteDeck desktop (WebSocket v1/v2 + HTTP v2) for plugin tests",
-  "license": "UNLICENSED",
+  "version": "1.0.0",
+  "description": "Programmable fake MuteDeck desktop (WebSocket v1/v2 and the HTTP API) for testing MuteDeck plugins",
+  "license": "MIT",
+  "author": "MuteDeck <support@mutedeck.com>",
+  "homepage": "https://github.com/mutedeck/mutedeck-plugin-sdk/tree/main/packages/mock-server#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mutedeck/mutedeck-plugin-sdk.git",
+    "directory": "packages/mock-server"
+  },
+  "bugs": {
+    "url": "https://github.com/mutedeck/mutedeck-plugin-sdk/issues"
+  },
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-      "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" }
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     }
   },
   "bin": {
     "mutedeck-mock-server": "./dist/cli.js"
   },
-  "files": ["dist", "src"],
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
-    "start": "node dist/cli.js"
+    "start": "node dist/cli.js",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "ws": "^8.18.0"

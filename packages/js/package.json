@@ -1,8 +1,18 @@
 {
   "name": "@mutedeck/plugin-client",
-  "version": "2.0.0-alpha.0",
-  "description": "Client for the MuteDeck plugin protocol v2 (WebSocket + HTTP), with v1 fallback",
-  "license": "UNLICENSED",
+  "version": "1.0.0",
+  "description": "Client for MuteDeck's plugin API: WebSocket protocol v2 with approval-based auth, the HTTP API with optional bearer tokens, and automatic fallback for older MuteDeck versions",
+  "license": "MIT",
+  "author": "MuteDeck <support@mutedeck.com>",
+  "homepage": "https://github.com/mutedeck/mutedeck-plugin-sdk/tree/main/packages/js#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mutedeck/mutedeck-plugin-sdk.git",
+    "directory": "packages/js"
+  },
+  "bugs": {
+    "url": "https://github.com/mutedeck/mutedeck-plugin-sdk/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.cjs",
@@ -62,16 +72,25 @@
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "README.md",
+    "LICENSE"
   ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "generate": "openapi-typescript ../../spec/openapi.yaml -o src/generated/schema.ts && openapi-typescript ../../spec/mutedeck-api-spec.yaml -o src/generated/http-schema.ts",
     "build": "tsup",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
   },
   "devDependencies": {
-    "@mutedeck/mock-server": "*",
+    "@mutedeck/mock-server": "^1.0.0",
     "@types/node": "^20.14.0",
     "@types/ws": "^8.5.12",
     "openapi-typescript": "^7.4.0",
@@ -79,5 +98,13 @@
     "typescript": "^5.6.0",
     "vitest": "^2.1.0",
     "ws": "^8.18.0"
-  }
+  },
+  "keywords": [
+    "mutedeck",
+    "stream-deck",
+    "plugin",
+    "websocket",
+    "meeting",
+    "mute"
+  ]
 }
