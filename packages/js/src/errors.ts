@@ -17,10 +17,34 @@ export class RequestTimeoutError extends MuteDeckError {}
 /** The socket closed before the response arrived. */
 export class ConnectionClosedError extends MuteDeckError {}
 
-/** The HTTP token is missing, unknown or revoked. The stored token has been cleared. */
-export class NotAuthenticatedError extends MuteDeckError {}
+/**
+ * MuteDeck refused an HTTP call that had no (valid) token: its "Plugins without
+ * authentication" setting requires pairing for this client. Call
+ * `ensurePaired()` and retry (or set `autoPair`).
+ *
+ * `reason` is `not_authenticated` (HTTP 401: "this computer only" for a remote
+ * client, or a rejected token) or `upgrade_required` (HTTP 426: "block").
+ */
+export class PairingRequiredError extends MuteDeckError {
+  constructor(
+    readonly reason: "not_authenticated" | "upgrade_required",
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
-/** The desktop app is too old to speak v2 over HTTP (it answers `/v2/*` with 404). */
+/**
+ * MuteDeck rejected the stored token (HTTP 401 with a token: unknown or
+ * revoked). The token has been cleared; pair again.
+ */
+export class NotAuthenticatedError extends PairingRequiredError {
+  constructor(message: string) {
+    super("not_authenticated", message);
+  }
+}
+
+/** The desktop app is too old for pairing (it answers `/v1/pair` and `/v1/whoami` with 404). */
 export class LegacyServerError extends MuteDeckError {}
 
 /** MuteDeck could not be reached (connection refused, DNS failure or timeout). */

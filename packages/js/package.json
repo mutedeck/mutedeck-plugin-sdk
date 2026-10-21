@@ -65,7 +65,7 @@
     "src"
   ],
   "scripts": {
-    "generate": "openapi-typescript ../../spec/openapi.yaml -o src/generated/schema.ts",
+    "generate": "openapi-typescript ../../spec/openapi.yaml -o src/generated/schema.ts && openapi-typescript ../../spec/mutedeck-api-spec.yaml -o src/generated/http-schema.ts",
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

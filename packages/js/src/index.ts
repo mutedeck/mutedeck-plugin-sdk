@@ -14,6 +14,7 @@ export {
   NotAuthenticatedError,
   NotConnectedError,
   PairingDeniedError,
+  PairingRequiredError,
   RequestFailedError,
   RequestTimeoutError,
 } from "./errors";
@@ -25,3 +26,4 @@ export type { StreamDeckInfoLike } from "./hosts/streamdeck";
 export { raycastHostInfo } from "./hosts/raycast";
 export type { RaycastEnvironmentLike } from "./hosts/raycast";
 export type { components as SpecComponents, paths as SpecPaths } from "./generated/schema";
+export type { components as HttpSpecComponents, paths as HttpSpecPaths } from "./generated/http-schema";

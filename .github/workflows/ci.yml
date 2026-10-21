@@ -16,7 +16,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Generated types are up to date
-        run: npm run generate && git diff --exit-code packages/js/src/generated/schema.ts
+        run: npm run generate && git diff --exit-code packages/js/src/generated/
       - run: npm run typecheck
       - run: npm run build
       - run: npm test

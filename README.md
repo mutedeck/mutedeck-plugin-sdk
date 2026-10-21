@@ -10,11 +10,14 @@ older MuteDeck versions. Each plugin uses these packages instead of writing the 
 | `MuteDeck.PluginClient` | `packages/dotnet` | Loupedeck / Logi Options+, Macro Deck. .NET Standard 2.0. |
 | `@mutedeck/mock-server` | `packages/mock-server` | A programmable fake MuteDeck for tests (any language). |
 
-The protocol is defined in [`spec/openapi.yaml`](spec/openapi.yaml), a copy of
-the desktop repo's `client/docs/plugin-api-v2/openapi.yaml`, **which is the
-source of truth**. Run `npm run sync-spec` to copy it again
-(from `../client/docs/plugin-api-v2/openapi.yaml`), then `npm run generate` to
-regenerate the TypeScript types.
+The protocol is defined by two specs that are copied from the desktop repo, **which is
+the source of truth** (see [`spec/README.md`](spec/README.md)):
+
+- [`spec/openapi.yaml`](spec/openapi.yaml) (internal, `client/docs/plugin-api-v2/openapi.yaml`) covers WebSocket v2.
+- [`spec/mutedeck-api-spec.yaml`](spec/mutedeck-api-spec.yaml) (public, `client/resources/mutedeck-api-spec.yaml`)
+  covers the HTTP API. It is `/v1/*` with an optional Bearer token, plus `/v1/pair` and `/v1/whoami`.
+
+Run `npm run sync-spec` to copy both again from `../client`, then `npm run generate` to regenerate the TypeScript types.
 
 ## How it works
 
@@ -33,6 +36,16 @@ regenerate the TypeScript types.
    If the server keeps rejecting freshly issued tokens (3 times in a row), the
    client backs off for 60 s instead of prompting in a loop.
 6. Reconnects use exponential backoff (1 s → 30 s, with jitter), which resets after a successful connection.
+
+Over HTTP (`MuteDeckHttpClient`), every endpoint is `/v1/*`. The token is optional:
+
+- **With a token:** it is sent as `Authorization: Bearer`, and it must be valid, or MuteDeck answers HTTP 401.
+- **Without a token:** MuteDeck's "Plugins without authentication" setting decides. The call is either allowed,
+  or refused with 401 ("this computer only", for a remote client) or 426 ("block").
+- **Normal answers** are HTTP 200, with the outcome in the body's `status` (for example `400` "not in a call").
+- **Getting a token:** `POST /v1/pair` and polling `GET /v1/pair/{id}`, which works without a token under every policy.
+- **Old MuteDeck versions** answer `/v1/pair` and `/v1/whoami` with 404 and ignore the token. There, the client
+  keeps calling `/v1` without one. It always sends `?source=<client.id>`.
 
 ## JavaScript / TypeScript
 
@@ -77,10 +90,15 @@ Public API (all exported from `@mutedeck/plugin-client`):
     `reportStatus(report)` (fire-and-forget; does nothing while not ready).
   - `keepAliveIntervalMs > 0` sends keep-alives while authenticated, in v1 mode **and while pending approval**.
 - `new MuteDeckHttpClient({ client, baseUrl? | host? + port? = 3491 + scheme?, tokenStore?, fetch?, timeoutMs? = 3000,
-  deniedRetryMinMs? = 30000, legacyFallback? = true })`:
-  `ensurePaired({ onPending, signal })` (returns the stored token or pairs; concurrent calls share one pairing;
-  after a denial it throws `PairingDeniedError` without contacting MuteDeck until `max(deniedRetryMinMs, retry_after)`),
-  `pair({ onPending, signal })`, `probe()`, `hasToken()`, `clearToken()`, `whoami()`, `getStatus()`, `mute(state?)`, `video()`, `share()`,
+  deniedRetryMinMs? = 30000, autoPair? = false | PairOptions })`:
+  - `ensurePaired({ onPending, signal }): Promise<string | undefined>` returns the stored token or pairs.
+    Concurrent calls share one pairing. It resolves `undefined` on an old MuteDeck (no pairing there; calls
+    work without a token). After a denial it throws `PairingDeniedError` without contacting MuteDeck until
+    `max(deniedRetryMinMs, retry_after)`.
+  - Calls throw `PairingRequiredError` (`reason`: `not_authenticated` | `upgrade_required`) when MuteDeck
+    requires a token. If the stored token was rejected, they throw its subclass `NotAuthenticatedError`
+    and clear the token. Catch it, `await ensurePaired()`, and retry, or set `autoPair` to do that once automatically.
+  - `pair({ onPending, signal })`, `probe()` (`GET /v1/whoami` without a token: 401 → `"v2"`, 404 → `"v1"`), `hasToken()`, `clearToken()`, `whoami()`, `getStatus()`, `mute(state?)`, `video()`, `share()`,
   `record()`, `leave()`, `bringToFront()`, `backgroundBlur()`, `raiseHand()`, `toggleChatWindow()`,
   `react(name)`, `listCustomActions()`, `customAction(name)`, `call(method, endpoint, query)`, `isLegacyServer`.
 - Token stores: `memoryTokenStore()`, `fromAsyncKeyValue(get, set, remove, key?)`,
@@ -89,7 +107,7 @@ Public API (all exported from `@mutedeck/plugin-client`):
 - Helpers: `validateClientInfo` (returns a copy with `version`/`host_version` sanitized, and throws only
   for fields that can't be fixed, such as `id`), `sanitizeVersion` (`"6.8.1 (21045)"` → `"6.8.1"`, `"7.0 beta"` → `"7.0-beta"`), `osFromPlatform`, `clientHeader`, `randomUuid`, `redact`.
 - Errors: `MuteDeckError`, `NotConnectedError`, `RequestTimeoutError`, `ConnectionClosedError`,
-  `RequestFailedError`, `NotAuthenticatedError`, `LegacyServerError`, `PairingDeniedError`, `HttpError`,
+  `RequestFailedError`, `PairingRequiredError`, `NotAuthenticatedError`, `LegacyServerError`, `PairingDeniedError`, `HttpError`,
   `MuteDeckUnreachableError` (HTTP: connection refused, DNS failure or timeout; the fetch error is in `cause`).
 - Host metadata, re-exported from the root and also available as separate entry points. None of them imports a host SDK.
   `typesVersions` makes the subpaths resolve under classic `node`/`commonjs` `moduleResolution` too:
@@ -188,7 +206,7 @@ const { MuteDeckClient, fromAsyncKeyValue, detectBrowserHost } = MuteDeckPluginC
 
 ```ts
 import { environment, LocalStorage, showToast } from "@raycast/api";
-import { MuteDeckHttpClient, NotAuthenticatedError, fromAsyncStringStorage } from "@mutedeck/plugin-client";
+import { MuteDeckHttpClient, PairingRequiredError, fromAsyncStringStorage } from "@mutedeck/plugin-client";
 import { raycastHostInfo } from "@mutedeck/plugin-client/hosts/raycast";
 
 const md = new MuteDeckHttpClient({
@@ -196,11 +214,16 @@ const md = new MuteDeckHttpClient({
   tokenStore: fromAsyncStringStorage((k) => LocalStorage.getItem<string>(k), (k, v) => LocalStorage.setItem(k, v), (k) => LocalStorage.removeItem(k)),
 });
 
-if ((await md.probe()) === "v2") {
-  // No-op when a token is stored; dedupes concurrent commands; backs off after a denial.
-  await md.ensurePaired({ onPending: () => showToast({ title: "Approve Raycast in MuteDeck" }) });
+const onPending = () => showToast({ title: "Approve Raycast in MuteDeck" });
+try {
+  await md.mute();                  // works without a token unless MuteDeck requires one
+} catch (error) {
+  if (!(error instanceof PairingRequiredError)) throw error;
+  await md.ensurePaired({ onPending }); // dedupes concurrent commands; backs off after a denial
+  await md.mute();
 }
-await md.mute(); // on an old MuteDeck this goes to /v1/mute?source=raycast automatically
+// or: new MuteDeckHttpClient({ ..., autoPair: { onPending } }) and just `await md.mute()`
+// To pair up front: `await md.ensurePaired({ onPending })` (resolves undefined on an old MuteDeck).
 ```
 
 You can also use `MuteDeckClient` with Node 22's global `WebSocket` (or with `ws`) if a command keeps a socket open.
@@ -294,7 +317,8 @@ events `StateChanged`, `StatusReceived`, `CustomActionsReceived`, `BrowserContro
 ```sh
 npx mutedeck-mock-server --mode v2 --approve auto     # current MuteDeck, approves after 500 ms
 npx mutedeck-mock-server --approve manual             # type "approve" / "deny" / "revoke" / "status mute=active"
-npx mutedeck-mock-server --mode v1                    # old MuteDeck: drops hello, /v2 HTTP → 404
+npx mutedeck-mock-server --legacy-policy block        # HTTP without a token → 426 (also: local [--remote] → 401)
+npx mutedeck-mock-server --mode v1                    # old MuteDeck: drops hello, /v1/pair + /v1/whoami → 404
 ```
 
 It listens on 3492 (WebSocket) and 3491 (HTTP) by default (`--ws-port`, `--http-port`).
@@ -306,6 +330,7 @@ const mock = await MockMuteDeck.start({ approve: "manual" }); // random ports: m
 mock.approve(); mock.deny(); mock.revoke(); mock.pushStatus({ mute: "active" });
 mock.pushBrowserControl({ action: "toggle_mute" }); mock.issueToken(instanceId);
 mock.actionResponses.set("toggle_mute", { status: 400, reason: "not_in_call" });
+mock.legacyPolicy = "local"; mock.httpClientsAreRemote = true; // HTTP without a token → 401
 // default custom actions: DEFAULT_CUSTOM_ACTIONS (one "custom", one "builtin"); override with { customActions }
 await mock.close();
 ```
@@ -316,6 +341,7 @@ For example, the Python Touch Portal plugin:
 
 1. Read `spec/openapi.yaml`. Its `info.description` defines the WebSocket flow,
    roles, limits and fallback rules, and `components/schemas/Ws*` define every message.
+   For HTTP, read `spec/mutedeck-api-spec.yaml` (the `/v1` endpoints, the optional token and pairing).
 2. Follow the behaviour described under "How it works" above. The TypeScript client
    (`packages/js/src/client.ts`) is the reference implementation and is about 600 lines.
 3. Test against the mock server in each mode: `--mode v2 --approve auto|manual|deny`

@@ -4,6 +4,7 @@ import {
   MuteDeckUnreachableError,
   NotAuthenticatedError,
   PairingDeniedError,
+  PairingRequiredError,
 } from "./errors";
 import { clientHeader, Credentials, isValidToken, validateClientInfo } from "./identity";
 import { defaultTimers, sleep } from "./timers";
@@ -53,16 +54,18 @@ export interface MuteDeckHttpClientOptions {
    * long (or the server's `retry_after`, if longer) before asking again. Default 30000 ms.
    */
   deniedRetryMinMs?: number;
+  /**
+   * When a call needs a token (MuteDeck refused it without one, or rejected the
+   * stored one), pair with these options and retry the call once. Default off:
+   * the call throws {@link PairingRequiredError} and you call
+   * {@link MuteDeckHttpClient.ensurePaired} yourself.
+   */
+  autoPair?: boolean | PairOptions;
   /** Clock for the denial wait. Default `Date.now`. */
   now?: () => number;
   logger?: Logger;
   timers?: Timers;
   generateInstanceId?: () => string;
-  /**
-   * When MuteDeck turns out to be too old for `/v2`, send the calls to `/v1`
-   * with `?source=<client.id>` instead of throwing. Default true.
-   */
-  legacyFallback?: boolean;
 }
 
 export interface PairOptions {
@@ -71,20 +74,27 @@ export interface PairOptions {
   onPending?: (pending: PairPending) => void;
 }
 
-/** Result of {@link MuteDeckHttpClient.probe}. */
+/**
+ * Result of {@link MuteDeckHttpClient.probe}: `v2` supports pairing and tokens,
+ * `v1` is an old MuteDeck (no pairing; calls work without a token).
+ */
 export type ServerKind = "v2" | "v1" | "unreachable";
 
 type Query = Record<string, string | undefined>;
 
 /**
- * HTTP client for `/v2` (port 3491), for plugins that don't keep a socket open
- * (Raycast, scripts). Use {@link pair} once to obtain a token.
+ * HTTP client for MuteDeck's `/v1` API (port 3491), for plugins that don't
+ * keep a socket open (Raycast, scripts).
  *
- * Methods resolve with MuteDeck's JSON body for API-level outcomes, including
- * `400 not_in_call`; check `status`. They throw {@link NotAuthenticatedError}
- * on 401 (the stored token is then cleared), {@link LegacyServerError} for an
- * old MuteDeck when `legacyFallback` is off, {@link MuteDeckUnreachableError}
- * when nothing answers, and {@link HttpError} otherwise.
+ * A token is optional. When stored, it is sent as `Authorization: Bearer`.
+ * Without one, MuteDeck's "Plugins without authentication" setting decides,
+ * and may refuse the call ({@link PairingRequiredError}). Call
+ * {@link ensurePaired} to get a token. Every call also sends
+ * `?source=<client.id>` and `X-MuteDeck-Client`.
+ *
+ * Methods resolve with MuteDeck's JSON body. API outcomes such as
+ * `{ status: 400, message: "Request invalid. Not in a call." }` arrive with
+ * HTTP 200, so check `status` in the body.
  */
 export class MuteDeckHttpClient {
   readonly client: Readonly<ClientInfo>;
@@ -93,7 +103,7 @@ export class MuteDeckHttpClient {
   private readonly timers: Timers;
   private readonly logger: Logger;
   private legacy = false;
-  private pairing?: Promise<string>;
+  private pairing?: Promise<string | undefined>;
   private deniedUntil = 0;
   private lastDenial?: PairingDeniedError;
 
@@ -105,7 +115,7 @@ export class MuteDeckHttpClient {
     this.logger = options.logger ?? {};
   }
 
-  /** True once a `/v2` call got the old desktop's 404. */
+  /** True once MuteDeck turned out to be an old version without pairing. */
   get isLegacyServer(): boolean {
     return this.legacy;
   }
@@ -120,14 +130,18 @@ export class MuteDeckHttpClient {
     await this.credentials.clearToken();
   }
 
-  /** Find out what is listening: a v2 MuteDeck, an old one, or nothing. */
+  /**
+   * Find out what is listening, without side effects: `GET /v1/whoami`
+   * without a token is 401 on a current MuteDeck and 404 on an old one.
+   */
   async probe(): Promise<ServerKind> {
     try {
-      const { status, body } = await this.raw("GET", "/v2/whoami", undefined, undefined, false);
+      const { status, body } = await this.raw("GET", "/v1/whoami", undefined, undefined, false);
       if (status === 404 && isLegacyNotFound(body)) {
         this.legacy = true;
         return "v1";
       }
+      this.legacy = false;
       return "v2";
     } catch {
       return "unreachable";
@@ -135,15 +149,19 @@ export class MuteDeckHttpClient {
   }
 
   /**
-   * Returns the stored token, or pairs to get one. Concurrent calls share one
-   * pairing (the first caller's `onPending` and `signal` apply). After a
-   * denial it throws {@link PairingDeniedError} without contacting MuteDeck
-   * until `max(deniedRetryMinMs, retry_after)` has passed.
+   * Returns the stored token, or pairs to get one. Resolves `undefined` on an
+   * old MuteDeck, which has no pairing (keep calling without a token there).
+   * Concurrent calls share one pairing (the first caller's `onPending` and
+   * `signal` apply). After a denial it throws {@link PairingDeniedError}
+   * without contacting MuteDeck until `max(deniedRetryMinMs, retry_after)` has passed.
    */
-  async ensurePaired(options: PairOptions = {}): Promise<string> {
+  async ensurePaired(options: PairOptions = {}): Promise<string | undefined> {
     const { token } = await this.credentials.get();
     if (token) {
       return token;
+    }
+    if (this.legacy) {
+      return undefined;
     }
     if (this.pairing) {
       return this.pairing;
@@ -154,6 +172,9 @@ export class MuteDeckHttpClient {
     }
     this.pairing = this.pair(options)
       .catch((error: unknown) => {
+        if (error instanceof LegacyServerError) {
+          return undefined;
+        }
         if (error instanceof PairingDeniedError) {
           const wait = Math.max(this.options.deniedRetryMinMs ?? 30000, (error.retryAfter ?? 0) * 1000);
           this.deniedUntil = this.now() + wait;
@@ -170,15 +191,17 @@ export class MuteDeckHttpClient {
   /**
    * Ask the user to approve this client and wait for the answer. Stores and
    * returns the token. Throws {@link PairingDeniedError} when denied or
-   * expired, {@link LegacyServerError} on an old MuteDeck.
+   * expired, {@link LegacyServerError} on an old MuteDeck. Prefer
+   * {@link ensurePaired}.
    */
   async pair(options: PairOptions = {}): Promise<string> {
     const { instanceId } = await this.credentials.get();
-    const start = await this.raw("POST", "/v2/pair", undefined, { client: this.client, instance_id: instanceId }, false, options.signal);
+    const start = await this.raw("POST", "/v1/pair", undefined, { client: this.client, instance_id: instanceId }, false, options.signal);
     if (start.status === 404 && isLegacyNotFound(start.body)) {
       this.legacy = true;
       throw new LegacyServerError("This MuteDeck version does not support pairing");
     }
+    this.legacy = false;
     throwIfDenied(start.status, start.body);
     if (start.status !== 202) {
       throw new HttpError(start.status, start.body);
@@ -191,7 +214,7 @@ export class MuteDeckHttpClient {
 
     for (;;) {
       await sleep(this.timers, Math.max(0.1, pending.poll_after ?? 2) * 1000, options.signal);
-      const poll = await this.raw("GET", `/v2/pair/${encodeURIComponent(requestId)}`, undefined, undefined, false, options.signal);
+      const poll = await this.raw("GET", `/v1/pair/${encodeURIComponent(requestId)}`, undefined, undefined, false, options.signal);
       if (poll.status === 200) {
         const token = (poll.body as { token?: unknown }).token;
         if (!isValidToken(token)) {
@@ -215,9 +238,18 @@ export class MuteDeckHttpClient {
     }
   }
 
-  /** Check the token; returns the client record. */
-  whoami(): Promise<WhoAmI> {
-    return this.call<WhoAmI>("GET", "whoami");
+  /**
+   * Check the stored token; returns the client record. Throws
+   * {@link PairingRequiredError} without a token, and
+   * {@link LegacyServerError} on an old MuteDeck.
+   */
+  async whoami(): Promise<WhoAmI> {
+    const body = await this.call<WhoAmI | { error?: string }>("GET", "whoami");
+    if (!("status" in body)) {
+      this.legacy = true;
+      throw new LegacyServerError("This MuteDeck version has no /v1/whoami");
+    }
+    return body as WhoAmI;
   }
 
   getStatus(): Promise<HttpStatusResponse> {
@@ -274,38 +306,47 @@ export class MuteDeckHttpClient {
   }
 
   /**
-   * Call `/v2/<endpoint>` with the stored token, or `/v1/<endpoint>?source=<client.id>`
-   * on an old MuteDeck.
+   * Call `/v1/<endpoint>`, with the stored token when there is one.
+   *
+   * - HTTP 401 after sending a token: the token is cleared and
+   *   {@link NotAuthenticatedError} (a {@link PairingRequiredError}) is thrown.
+   * - HTTP 401 or 426 without a token: MuteDeck requires pairing, so
+   *   {@link PairingRequiredError} is thrown.
+   * - With `autoPair`, either case pairs and retries once.
    */
   async call<T = ApiResponse>(method: "GET" | "POST", endpoint: string, query: Query = {}): Promise<T> {
-    if (this.legacy) {
-      return this.callV1<T>(method, endpoint, query);
-    }
-    const { token } = await this.credentials.get();
-    const { status, body } = await this.raw(method, `/v2/${endpoint}`, query, undefined, true);
-    if (status === 404 && isLegacyNotFound(body)) {
-      this.legacy = true;
-      if (this.options.legacyFallback === false) {
-        throw new LegacyServerError("This MuteDeck version does not support API v2");
+    try {
+      return await this.callOnce<T>(method, endpoint, query);
+    } catch (error) {
+      const autoPair = this.options.autoPair;
+      if (!autoPair || !(error instanceof PairingRequiredError)) {
+        throw error;
       }
-      this.logger.info?.("MuteDeck: old version detected; using API v1");
-      return this.callV1<T>(method, endpoint, query);
+      const token = await this.ensurePaired(autoPair === true ? {} : autoPair);
+      if (!token) {
+        throw error;
+      }
+      return this.callOnce<T>(method, endpoint, query);
     }
+  }
+
+  private async callOnce<T>(method: "GET" | "POST", endpoint: string, query: Query): Promise<T> {
+    const { token } = await this.credentials.get();
+    const { status, body } = await this.raw(method, `/v1/${endpoint}`, { ...query, source: this.client.id }, undefined, true);
     if (status === 401) {
       if (token) {
         await this.credentials.clearToken();
+        throw new NotAuthenticatedError("MuteDeck rejected the token; pair again");
       }
-      throw new NotAuthenticatedError(token ? "MuteDeck rejected the token; pair again" : "Not paired with MuteDeck");
+      throw new PairingRequiredError("not_authenticated", "MuteDeck requires pairing for this client");
     }
-    if (status >= 500 || body === undefined) {
-      throw new HttpError(status, body);
+    if (status === 426) {
+      throw new PairingRequiredError("upgrade_required", "MuteDeck only accepts paired clients");
     }
-    return body as T;
-  }
-
-  private async callV1<T>(method: "GET" | "POST", endpoint: string, query: Query): Promise<T> {
-    const { status, body } = await this.raw(method, `/v1/${endpoint}`, { ...query, source: this.client.id }, undefined, false);
-    if (status !== 200 || body === undefined) {
+    if (status === 404 && isLegacyNotFound(body) && endpoint === "whoami") {
+      return (body ?? {}) as T;
+    }
+    if (status !== 200 || body === undefined || typeof body !== "object") {
       throw new HttpError(status, body);
     }
     return body as T;
@@ -394,7 +435,7 @@ export class MuteDeckHttpClient {
   }
 }
 
-/** The old desktop answers unknown paths with 404 `{ "error": "Invalid URL." }` (no `status` field). */
+/** An old MuteDeck answers unknown paths with 404 `{ "error": "Invalid URL." }` (no `status` field). */
 function isLegacyNotFound(body: unknown): boolean {
   return !(body && typeof body === "object" && "status" in body);
 }

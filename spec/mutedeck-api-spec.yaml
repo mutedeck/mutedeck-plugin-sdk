@@ -1,0 +1,1036 @@
+openapi: 3.0.3
+info:
+  title: MuteDeck
+  description: |-
+    Take control of your meetings with MuteDeck
+    Reduce meeting stress and mistakes. Never hear "hey, you're on mute" again.
+
+    Check and control your Zoom, Microsoft Teams, Google Meet, Webex, and other calls; quickly mute or unmute, toggle your webcam, start sharing, quickly leave the meeting, and more.
+
+    ## Authentication
+
+    A token is optional. Send it as `Authorization: Bearer <token>`; when
+    sent, it must be valid, or the request is answered with HTTP 401. A token
+    also identifies the caller, so `source` isn't needed with one.
+
+    Without a token, MuteDeck's "Plugins without authentication" setting
+    (Settings > Plugins & API) decides: by default every request is allowed;
+    with "this computer only", requests from other devices get 401; with
+    "block", every request without a token gets 426.
+
+    To get a token:
+    - Scripts and tools: create one in MuteDeck Settings > Plugins & API.
+    - Apps and plugins: `POST /v1/pair`, then poll `GET /v1/pair/{request_id}`
+      until the user clicks Allow in MuteDeck. Older MuteDeck versions answer
+      `/v1/pair` with 404; keep calling the API without a token there.
+
+    Some useful links:
+    - [mutedeck.com](https://mutedeck.com)
+  contact:
+    email: support@mutedeck.com
+  version: 1.6.0
+servers:
+  - url: http://localhost:3491
+security:
+  - {}
+  - bearerAuth: []
+tags:
+  - name: Pairing
+    description: Get a token by approving this client in MuteDeck
+  - name: Meeting Status
+    description: Current state of your meeting
+  - name: Meeting Controls
+    description: Control your meeting
+paths:
+  /v1/status:
+    get:
+      tags:
+        - Meeting Status
+      summary: Get the current meeting status
+      description: Get the current meeting status
+      operationId: getStatus
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeetingStatus'
+
+  /v1/leave:
+    post:
+      tags:
+        - Meeting Controls
+      summary: Leaves the current meeting
+      description: Leaves the current meeting
+      operationId: leaveMeeting
+      parameters:
+        - $ref: '#/components/parameters/sourceParam'
+      responses:
+        '200':
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              examples:
+                success:
+                  value:
+                    status: 200
+                not-in-a-call:
+                  value:
+                    status: 400
+                    message: Request invalid. Not in a call.
+                not-licensed:
+                  value:
+                    status: 400
+                    message: Request invalid. Feature not licensed.
+
+  /v1/mute:
+    post:
+      tags:
+        - Meeting Controls
+      summary: Toggles the mute in the current meeting or the system microphone
+      description: Toggles the mute in the current meeting or the system microphone
+      operationId: toggleMute
+      parameters:
+        - $ref: '#/components/parameters/sourceParam'
+        - in: query
+          name: state
+          schema:
+            enum:
+              - toggle
+              - on
+              - off
+          required: false
+          description: Desired state for mute. Defaults to toggling to the opposite state.
+      responses:
+        '200':
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              examples:
+                success:
+                  value:
+                    status: 200
+
+  /v1/record:
+    post:
+      tags:
+        - Meeting Controls
+      summary: Toggles recording in the current meeting
+      description: Toggles recording in the current meeting
+      operationId: toggleRecord
+      parameters:
+        - $ref: '#/components/parameters/sourceParam'
+        - in: query
+          name: state
+          schema:
+            enum:
+              - toggle
+              - on
+              - off
+          required: false
+          description: Desired state for record. Defaults to toggling to the opposite state.
+      responses:
+        '200':
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              examples:
+                success:
+                  value:
+                    status: 200
+                not-in-a-call:
+                  value:
+                    status: 400
+                    message: Request invalid. Not in a call.
+                not-licensed:
+                  value:
+                    status: 400
+                    message: Request invalid. Feature not licensed.
+
+  /v1/share:
+    post:
+      tags:
+        - Meeting Controls
+      summary: Toggles sharing in the current meeting
+      description: Toggles sharing in the current meeting
+      operationId: toggleShare
+      parameters:
+        - $ref: '#/components/parameters/sourceParam'
+        - in: query
+          name: state
+          schema:
+            enum:
+              - toggle
+              - on
+              - off
+          required: false
+          description: Desired state for share. Defaults to toggling to the opposite state.
+      responses:
+        '200':
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              examples:
+                success:
+                  value:
+                    status: 200
+                not-in-a-call:
+                  value:
+                    status: 400
+                    message: Request invalid. Not in a call.
+                not-licensed:
+                  value:
+                    status: 400
+                    message: Request invalid. Feature not licensed.
+
+  /v1/video:
+    post:
+      tags:
+        - Meeting Controls
+      summary: Toggles the camera in the current meeting
+      description: Toggles the camera in the current meeting
+      operationId: toggleVideo
+      parameters:
+        - $ref: '#/components/parameters/sourceParam'
+        - in: query
+          name: state
+          schema:
+            enum:
+              - toggle
+              - on
+              - off
+          required: false
+          description: Desired state for video. Defaults to toggling to the opposite state.
+      responses:
+        '200':
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              examples:
+                success:
+                  value:
+                    status: 200
+                not-in-a-call:
+                  value:
+                    status: 400
+                    message: Request invalid. Not in a call.
+                not-licensed:
+                  value:
+                    status: 400
+                    message: Request invalid. Feature not licensed.
+
+  /v1/bring-to-front:
+    post:
+      tags:
+        - Meeting Controls
+      summary: Brings conference call apps to the front as active app
+      description: Brings conference call apps to the front as active app
+      operationId: bringToFront
+      parameters:
+        - $ref: '#/components/parameters/sourceParam'
+      responses:
+        '200':
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              examples:
+                success:
+                  value:
+                    status: 200
+                not-licensed:
+                  value:
+                    status: 400
+                    message: Request invalid. Feature not licensed.
+
+  /v1/pair:
+    post:
+      tags:
+        - Pairing
+      summary: Ask the user to approve this client
+      description: |-
+        Shows an approval prompt in MuteDeck. Poll the returned request until
+        it is approved, denied or expired (after 120 seconds). Rate-limited
+        per IP address. Needs no token.
+      operationId: requestPairing
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PairRequest'
+            example:
+              client:
+                id: raycast
+                name: Raycast
+                version: "1.3.0"
+                host_app: raycast
+                host_version: "1.84.2"
+                os: mac
+              instance_id: 1d1f8f4e-5f0a-4b5e-9c55-2f8f5a1d3c11
+      responses:
+        '202':
+          description: Prompt shown or queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairPending'
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthError'
+        '403':
+          description: Denied recently for this client, or too many prompts queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairDenied'
+        '429':
+          description: Too many pairing requests from this address
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthError'
+
+  /v1/pair/{request_id}:
+    get:
+      tags:
+        - Pairing
+      summary: Poll a pairing request
+      description: |-
+        Returns the token exactly once. After a 200 response the request is
+        gone, and later polls get 404. Needs no token.
+      operationId: pollPairing
+      security: []
+      parameters:
+        - in: path
+          name: request_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Approved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairApproved'
+        '202':
+          description: Still waiting for the user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairPending'
+        '403':
+          description: Denied or expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairDenied'
+        '404':
+          description: Unknown or already collected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthError'
+
+  /v1/whoami:
+    get:
+      tags:
+        - Pairing
+      summary: Check a token
+      description: Returns the client the token belongs to.
+      operationId: whoami
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The token is valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WhoAmI'
+        '401':
+          description: Missing, unknown or revoked token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthError'
+
+  /v1/list-custom-actions:
+    get:
+      tags:
+        - Custom Actions
+      summary: Gets a list of the configured custom actions
+      description: Gets a list of the configured custom actions
+      operationId: getCustomActions
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomActionList'
+
+  /v1/custom-action:
+    post:
+      tags:
+        - Custom Actions
+      summary: Triggers a custom action, as defined in the MuteDeck settings
+      description: Triggers a custom action, as defined in the MuteDeck settings
+      operationId: triggerCustomAction
+      parameters:
+        - $ref: '#/components/parameters/sourceParam'
+        - in: query
+          name: name
+          schema:
+            type: string
+          required: true
+          description: Name of the custom action as defined in the MuteDeck settings.
+      responses:
+        '200':
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              examples:
+                success:
+                  value:
+                    status: 200
+                not-found:
+                  value:
+                    status: 404
+                    message: Custom action name not found.
+                not-in-a-call:
+                  value:
+                    status: 400
+                    message: Request invalid. Not in a call.
+                not-licensed:
+                  value:
+                    status: 400
+                    message: Request invalid. Feature not licensed.
+
+  /v1/background-blur:
+    post:
+      tags:
+        - Microsoft Teams Only
+      summary: Toggles background blur on your camera.
+      description: Toggles background blur on your camera.
+      operationId: toggleBackgroundBlur
+      parameters:
+        - $ref: '#/components/parameters/sourceParam'
+      responses:
+        '200':
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              examples:
+                success:
+                  value:
+                    status: 200
+                not-in-a-call:
+                  value:
+                    status: 400
+                    message: Request invalid. Not in a call.
+                not-licensed:
+                  value:
+                    status: 400
+                    message: Request invalid. Feature not licensed.
+
+  /v1/toggle-chat-window:
+    post:
+      tags:
+        - Microsoft Teams v2 Only
+      summary: Opens or closes the chat window.
+      description: Opens or closes the chat window.
+      operationId: toggleChatWindow
+      parameters:
+        - $ref: '#/components/parameters/sourceParam'
+      responses:
+        '200':
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              examples:
+                success:
+                  value:
+                    status: 200
+                not-in-a-call:
+                  value:
+                    status: 400
+                    message: Request invalid. Not in a call.
+                not-licensed:
+                  value:
+                    status: 400
+                    message: Request invalid. Feature not licensed.
+
+  /v1/raise-hand:
+    post:
+      tags:
+        - Microsoft Teams Only
+      summary: Raises your hand.
+      description: Raises your hand.
+      operationId: raiseHand
+      parameters:
+        - $ref: '#/components/parameters/sourceParam'
+      responses:
+        '200':
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              examples:
+                success:
+                  value:
+                    status: 200
+                not-in-a-call:
+                  value:
+                    status: 400
+                    message: Request invalid. Not in a call.
+                not-licensed:
+                  value:
+                    status: 400
+                    message: Request invalid. Feature not licensed.
+
+  /v1/react-applause:
+    post:
+      tags:
+        - Microsoft Teams Only
+      summary: Sends an applause reaction.
+      description: Sends an applause reaction.
+      operationId: reactApplause
+      parameters:
+        - $ref: '#/components/parameters/sourceParam'
+      responses:
+        '200':
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              examples:
+                success:
+                  value:
+                    status: 200
+                not-in-a-call:
+                  value:
+                    status: 400
+                    message: Request invalid. Not in a call.
+                not-licensed:
+                  value:
+                    status: 400
+                    message: Request invalid. Feature not licensed.
+
+  /v1/react-laugh:
+    post:
+      tags:
+        - Microsoft Teams Only
+      summary: Sends a laugh reaction.
+      description: Sends a laugh reaction.
+      operationId: reactLaugh
+      parameters:
+        - $ref: '#/components/parameters/sourceParam'
+      responses:
+        '200':
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              examples:
+                success:
+                  value:
+                    status: 200
+                not-in-a-call:
+                  value:
+                    status: 400
+                    message: Request invalid. Not in a call.
+                not-licensed:
+                  value:
+                    status: 400
+                    message: Request invalid. Feature not licensed.
+
+  /v1/react-like:
+    post:
+      tags:
+        - Microsoft Teams Only
+      summary: Sends a like reaction.
+      description: Sends a like reaction.
+      operationId: reactLike
+      parameters:
+        - $ref: '#/components/parameters/sourceParam'
+      responses:
+        '200':
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              examples:
+                success:
+                  value:
+                    status: 200
+                not-in-a-call:
+                  value:
+                    status: 400
+                    message: Request invalid. Not in a call.
+                not-licensed:
+                  value:
+                    status: 400
+                    message: Request invalid. Feature not licensed.
+
+  /v1/react-love:
+    post:
+      tags:
+        - Microsoft Teams Only
+      summary: Sends a love reaction.
+      description: Sends a love reaction.
+      operationId: reactLove
+      parameters:
+        - $ref: '#/components/parameters/sourceParam'
+      responses:
+        '200':
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              examples:
+                success:
+                  value:
+                    status: 200
+                not-in-a-call:
+                  value:
+                    status: 400
+                    message: Request invalid. Not in a call.
+                not-licensed:
+                  value:
+                    status: 400
+                    message: Request invalid. Feature not licensed.
+
+  /v1/react-wow:
+    post:
+      tags:
+        - Microsoft Teams Only
+      summary: Sends a wow reaction.
+      description: Sends a wow reaction.
+      operationId: reactWow
+      parameters:
+        - $ref: '#/components/parameters/sourceParam'
+      responses:
+        '200':
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              examples:
+                success:
+                  value:
+                    status: 200
+                not-in-a-call:
+                  value:
+                    status: 400
+                    message: Request invalid. Not in a call.
+                not-licensed:
+                  value:
+                    status: 400
+                    message: Request invalid. Feature not licensed.
+
+  /v1/react-tada:
+    post:
+      tags:
+        - Google Meet & Zoom Web Only
+      summary: Sends a celebrate/tada reaction.
+      description: Sends a celebrate/tada reaction. Google Meet and Zoom Web.
+      operationId: reactCelebrate
+      parameters:
+        - $ref: '#/components/parameters/sourceParam'
+      responses:
+        '200':
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              examples:
+                success:
+                  value:
+                    status: 200
+                not-in-a-call:
+                  value:
+                    status: 400
+                    message: Request invalid. Not in a call.
+                not-licensed:
+                  value:
+                    status: 400
+                    message: Request invalid. Feature not licensed.
+
+  /v1/react-sad:
+    post:
+      tags:
+        - Google Meet Only
+      summary: Sends a sad reaction.
+      description: Sends a sad reaction. Google Meet only.
+      operationId: reactSad
+      parameters:
+        - $ref: '#/components/parameters/sourceParam'
+      responses:
+        '200':
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              examples:
+                success:
+                  value:
+                    status: 200
+                not-in-a-call:
+                  value:
+                    status: 400
+                    message: Request invalid. Not in a call.
+                not-licensed:
+                  value:
+                    status: 400
+                    message: Request invalid. Feature not licensed.
+
+  /v1/react-thinking:
+    post:
+      tags:
+        - Google Meet Only
+      summary: Sends a thinking reaction.
+      description: Sends a thinking reaction. Google Meet only.
+      operationId: reactThinking
+      parameters:
+        - $ref: '#/components/parameters/sourceParam'
+      responses:
+        '200':
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              examples:
+                success:
+                  value:
+                    status: 200
+                not-in-a-call:
+                  value:
+                    status: 400
+                    message: Request invalid. Not in a call.
+                not-licensed:
+                  value:
+                    status: 400
+                    message: Request invalid. Feature not licensed.
+
+  /v1/react-dislike:
+    post:
+      tags:
+        - Google Meet Only
+      summary: Sends a dislike reaction.
+      description: Sends a dislike reaction. Google Meet only.
+      operationId: reactDislike
+      parameters:
+        - $ref: '#/components/parameters/sourceParam'
+      responses:
+        '200':
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              examples:
+                success:
+                  value:
+                    status: 200
+                not-in-a-call:
+                  value:
+                    status: 400
+                    message: Request invalid. Not in a call.
+                not-licensed:
+                  value:
+                    status: 400
+                    message: Request invalid. Feature not licensed.
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >-
+        64-character token from POST /v1/pair or MuteDeck Settings > Plugins &
+        API. Optional unless MuteDeck is set to require it.
+  parameters:
+    sourceParam:
+      in: query
+      name: source
+      schema:
+        type: string
+      required: false
+      description: >-
+        Identifier of the client sending this request (e.g. raycast,
+        loupedeck, streamdeck), used for anonymous usage statistics.
+        Optional; unknown values are normalized to a lowercase slug.
+  schemas:
+    MeetingStatus:
+      type: object
+      properties:
+        call:
+          type: string
+          description: Whether or not a call is active
+          enum:
+            - active
+          example: active
+        control:
+          type: string
+          description: System that's controlling the microphone, camera, etc.
+          enum:
+            - system
+            - zoom
+            - webex
+            - teams
+            - google-meet
+          example: zoom
+        mute:
+          type: string
+          description: Status of muting (active = muted)
+          enum:
+            - active
+            - inactive
+          example: active
+        record:
+          type: string
+          description: Status of recording (disabled = no call)
+          enum:
+            - active
+            - inactive
+            - disabled
+          example: active
+        share:
+          type: string
+          description: Status of screen sharing (disabled = no call)
+          enum:
+            - active
+            - inactive
+            - disabled
+          example: inactive
+        status:
+          type: integer
+          description: Status of API call
+          enum:
+            - 200
+          example: 200
+        version:
+          type: string
+          description: MuteDeck application version
+          example: "4.6"
+        video:
+          type: string
+          description: Status of camera (disabled = no call)
+          enum:
+            - active
+            - inactive
+            - disabled
+          example: active
+
+    CustomActionList:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+          description: Status of API call
+          enum:
+            - 200
+            - 400
+        custom_actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/CustomActionDetails'
+
+    CustomActionDetails:
+      type: object
+      properties:
+        name:
+          type: string
+          description: The name of the custom action, which is used to trigger it
+          example: zoom-hands-up
+        shortcut:
+          type: string
+          description: Key shortcut that's sent to application. Empty string for built-in actions.
+          example: Alt+Y
+        application:
+          type: string
+          description: The conference call application this custom action is for
+          enum:
+            - zoom
+            - teams
+            - google-meet
+            - webex
+            - discord
+            - active-application
+          example: zoom
+        app_types:
+          type: array
+          description: List of all application types this action is available for
+          items:
+            type: string
+          example: ["zoom", "teams"]
+        type:
+          type: string
+          description: Whether this is a user-defined custom action or a built-in action
+          enum:
+            - custom
+            - builtin
+          example: custom
+
+    AuthError:
+      type: object
+      description: >-
+        Sent with a real HTTP status (401, 404, 426 or 429) when a request is
+        refused before it runs: an unknown token, a missing token where one is
+        required, or pairing errors.
+      properties:
+        status:
+          type: integer
+          example: 401
+        reason:
+          type: string
+          enum:
+            - not_authenticated
+            - upgrade_required
+            - bad_request
+            - not_found
+            - rate_limited
+        message:
+          type: string
+        retry_after:
+          type: integer
+          description: Seconds
+    PairRequest:
+      type: object
+      required:
+        - client
+        - instance_id
+      properties:
+        client:
+          type: object
+          required:
+            - id
+            - name
+          properties:
+            id:
+              type: string
+              pattern: '^[a-z0-9-]{1,32}$'
+            name:
+              type: string
+              maxLength: 64
+            version:
+              type: string
+            host_app:
+              type: string
+            host_version:
+              type: string
+            os:
+              type: string
+              enum:
+                - mac
+                - windows
+                - linux
+        instance_id:
+          type: string
+          pattern: '^[A-Za-z0-9-]{8,64}$'
+          description: Generated once per install and kept with the token.
+    PairPending:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - pending
+        request_id:
+          type: string
+        poll_after:
+          type: integer
+          description: Seconds to wait before the next poll
+        expires_in:
+          type: integer
+          description: Seconds until the request expires
+    PairApproved:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - approved
+        token:
+          type: string
+    PairDenied:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - denied
+        reason:
+          type: string
+          enum:
+            - user
+            - expired
+            - busy
+        retry_after:
+          type: integer
+          description: Seconds before asking again
+    WhoAmI:
+      type: object
+      properties:
+        status:
+          type: integer
+          example: 200
+        client_id:
+          type: string
+        name:
+          type: string
+        created:
+          type: string
+          format: date-time
+        server_version:
+          type: string
+
+    ApiResponse:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: integer
+          format: int32
+          description: Status of API call
+          enum:
+            - 200
+            - 400
+        message:
+          type: string
+          description: Optional message about why the API call failed

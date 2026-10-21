@@ -7,7 +7,7 @@
  */
 import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
-import { MockMuteDeck, type ApproveMode, type ServerMode } from "./index.js";
+import { MockMuteDeck, type ApproveMode, type LegacyPolicy, type ServerMode } from "./index.js";
 
 const HELP = `Usage: mutedeck-mock-server [options]
 
@@ -19,6 +19,8 @@ Options:
   --http-port <port>             HTTP port. Default 3491
   --delay <ms>                   Delay before an automatic decision. Default 500
   --deny-retry-after <seconds>   retry_after sent with denials. Default 600
+  --legacy-policy <allow|local|block>  HTTP requests without a token. Default allow
+  --remote                       Treat HTTP clients as remote (for --legacy-policy local)
   --quiet                        Don't log traffic
   -h, --help                     Show this help
 
@@ -41,6 +43,8 @@ const { values } = parseArgs({
     "http-port": { type: "string", default: "3491" },
     delay: { type: "string", default: "500" },
     "deny-retry-after": { type: "string", default: "600" },
+    "legacy-policy": { type: "string", default: "allow" },
+    remote: { type: "boolean", default: false },
     quiet: { type: "boolean", default: false },
     help: { type: "boolean", short: "h", default: false },
   },
@@ -50,7 +54,11 @@ if (values.help) {
   console.log(HELP);
   process.exit(0);
 }
-if (!["v1", "v2"].includes(values.mode!) || !["auto", "manual", "deny"].includes(values.approve!)) {
+if (
+  !["v1", "v2"].includes(values.mode!) ||
+  !["auto", "manual", "deny"].includes(values.approve!) ||
+  !["allow", "local", "block"].includes(values["legacy-policy"]!)
+) {
   console.error(HELP);
   process.exit(2);
 }
@@ -63,6 +71,8 @@ const server = await MockMuteDeck.start({
   httpPort: Number(values["http-port"]),
   decisionDelayMs: Number(values.delay),
   denyRetryAfter: Number(values["deny-retry-after"]),
+  legacyPolicy: values["legacy-policy"] as LegacyPolicy,
+  httpClientsAreRemote: values.remote,
   log: values.quiet ? undefined : (line) => console.log(line),
 });
 console.log(`MuteDeck mock (${server.mode}) on ${server.wsUrl} and ${server.httpUrl}. Type "help" for commands.`);

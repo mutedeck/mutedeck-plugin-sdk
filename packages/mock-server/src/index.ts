@@ -3,11 +3,13 @@
  *
  * - WebSocket (default port 3492): `/v2` speaks protocol v2 (hello, welcome,
  *   approval, revocation, request ids); any other path speaks v1.
- * - HTTP (default port 3491): `/v2/pair`, `/v2/pair/{id}` and the bearer
- *   protected `/v2/*` endpoints, plus `/v1/*`.
+ * - HTTP (default port 3491): `/v1/*` with an optional Bearer token (invalid
+ *   token → 401; no token → `legacyPolicy`), `/v1/pair`, `/v1/pair/{id}` and
+ *   `/v1/whoami`.
  *
  * `mode: "v1"` simulates an old MuteDeck: `/v2` sockets are accepted but
- * `hello` is silently dropped, and HTTP `/v2/*` returns 404 `{"error":"Invalid URL."}`.
+ * `hello` is silently dropped, HTTP `/v1/pair` and `/v1/whoami` return 404
+ * `{"error":"Invalid URL."}`, and `Authorization` is ignored.
  */
 import { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
@@ -90,9 +92,19 @@ export interface MockServerOptions {
   pairExpiresIn?: number;
   /** How long a decision is kept for an instance whose socket dropped (ms). Default 120000. */
   decisionMemoryMs?: number;
+  /**
+   * "Plugins without authentication" for HTTP requests without a token:
+   * `allow` (default), `local` (this computer only; see `httpClientsAreRemote`)
+   * or `block` (426).
+   */
+  legacyPolicy?: LegacyPolicy;
+  /** Treat HTTP clients as remote, for testing `legacyPolicy: "local"`. Default false. */
+  httpClientsAreRemote?: boolean;
   /** Optional log sink, e.g. `console.log`. */
   log?: (line: string) => void;
 }
+
+export type LegacyPolicy = "allow" | "local" | "block";
 
 /** One WebSocket connection as seen by the mock. */
 export interface MockConnection {
@@ -226,6 +238,10 @@ export function validateClientInfo(client: unknown): string | undefined {
 export class MockMuteDeck extends EventEmitter {
   mode: ServerMode;
   approveMode: ApproveMode;
+  /** See {@link MockServerOptions.legacyPolicy}. */
+  legacyPolicy: LegacyPolicy;
+  /** See {@link MockServerOptions.httpClientsAreRemote}. */
+  httpClientsAreRemote: boolean;
   status: MeetingStatus;
   customActions: CustomAction[];
   /** Last `update-status` report from a status-source. */
@@ -238,7 +254,7 @@ export class MockMuteDeck extends EventEmitter {
   /** Actions the mock receives but never answers (to test client timeouts). */
   readonly silentActions = new Set<string>();
 
-  private readonly options: Required<Omit<MockServerOptions, "log" | "status" | "customActions" | "mode" | "approve">> & {
+  private readonly options: Required<Omit<MockServerOptions, "log" | "status" | "customActions" | "mode" | "approve" | "legacyPolicy" | "httpClientsAreRemote">> & {
     log?: (line: string) => void;
   };
   private readonly pendingApprovals = new Map<string, PendingApproval>();
@@ -253,6 +269,8 @@ export class MockMuteDeck extends EventEmitter {
     super();
     this.mode = options.mode ?? "v2";
     this.approveMode = options.approve ?? "auto";
+    this.legacyPolicy = options.legacyPolicy ?? "allow";
+    this.httpClientsAreRemote = options.httpClientsAreRemote ?? false;
     this.status = options.status ?? {
       call: "active",
       control: "zoom",
@@ -763,16 +781,24 @@ export class MockMuteDeck extends EventEmitter {
     this.log(`http ${record.method} ${req.url}`);
 
     const path = url.pathname;
-    if (path.startsWith("/v1/")) {
-      this.onHttpV1(path.slice(4), url, res);
-      return;
-    }
-    if (!path.startsWith("/v2/") || this.mode === "v1") {
+    if (!path.startsWith("/v1/")) {
       json(res, 404, { error: "Invalid URL." });
       return;
     }
     const endpoint = path.slice(4);
+    const isPair = endpoint === "pair" || endpoint.startsWith("pair/");
 
+    if (this.mode === "v1") {
+      // Old MuteDeck: no pairing or whoami, Authorization ignored.
+      if (isPair || endpoint === "whoami") {
+        json(res, 404, { error: "Invalid URL." });
+        return;
+      }
+      this.onHttpAction(endpoint, req.method ?? "GET", url, res);
+      return;
+    }
+
+    // Pairing is reachable without a token under every policy.
     if (endpoint === "pair" && req.method === "POST") {
       this.onPair(body, res);
       return;
@@ -782,15 +808,28 @@ export class MockMuteDeck extends EventEmitter {
       return;
     }
 
-    const auth = req.headers.authorization ?? "";
-    const token = /^Bearer ([0-9a-f]{64})$/.exec(auth)?.[1];
-    const tokenRecord = token ? this.tokens.get(token) : undefined;
-    if (!tokenRecord) {
-      json(res, 401, { status: 401, reason: "not_authenticated", message: "Authentication required." });
+    const auth = req.headers.authorization;
+    let tokenRecord: TokenRecord | undefined;
+    if (auth !== undefined) {
+      // A token is optional, but when sent it must be valid.
+      const token = /^Bearer ([0-9a-f]{64})$/.exec(auth)?.[1];
+      tokenRecord = token ? this.tokens.get(token) : undefined;
+      if (!tokenRecord) {
+        unauthorized(res);
+        return;
+      }
+    } else if (endpoint === "whoami") {
+      unauthorized(res);
+      return;
+    } else if (this.legacyPolicy === "block") {
+      json(res, 426, { status: 426, reason: "upgrade_required", message: "Pair this client with MuteDeck." });
+      return;
+    } else if (this.legacyPolicy === "local" && this.httpClientsAreRemote) {
+      unauthorized(res);
       return;
     }
 
-    if (endpoint === "whoami" && req.method === "GET") {
+    if (endpoint === "whoami" && req.method === "GET" && tokenRecord) {
       json(res, 200, {
         status: 200,
         client_id: tokenRecord.client.id,
@@ -800,42 +839,21 @@ export class MockMuteDeck extends EventEmitter {
       });
       return;
     }
-    if (endpoint === "status" && req.method === "GET") {
-      json(res, 200, { ...this.status, status: 200, version: this.options.serverVersion });
-      return;
-    }
-    if (endpoint === "list-custom-actions" && req.method === "GET") {
-      json(res, 200, { status: 200, custom_actions: this.customActions });
-      return;
-    }
-    if (endpoint === "custom-action" && req.method === "POST") {
-      const name = url.searchParams.get("name");
-      if (!name || !this.customActions.some((a) => a.name === name)) {
-        json(res, 404, { status: 404, reason: "not_found", message: "Custom action name not found." });
-      } else {
-        json(res, 200, { status: 200 });
-      }
-      return;
-    }
-    const action = HTTP_CONTROL[endpoint] ?? (endpoint.startsWith("react-") && CONTROL_ACTIONS.has(endpoint) ? endpoint : undefined);
-    if (action && req.method === "POST") {
-      const response = this.actionResponses.get(action) ?? { status: 200 };
-      json(res, Number(response.status ?? 200), response);
-      return;
-    }
-    json(res, 404, { status: 404, reason: "not_found" });
+    this.onHttpAction(endpoint, req.method ?? "GET", url, res);
   }
 
-  private onHttpV1(endpoint: string, url: URL, res: ServerResponse): void {
-    if (endpoint === "status") {
-      json(res, 200, { ...this.status, status: 200 });
-    } else if (endpoint === "list-custom-actions") {
+  /** v1 semantics: HTTP 200 with the outcome in the body's `status`. */
+  private onHttpAction(endpoint: string, method: string, url: URL, res: ServerResponse): void {
+    if (endpoint === "status" && method === "GET") {
+      json(res, 200, { ...this.status, status: 200, version: this.options.serverVersion });
+    } else if (endpoint === "list-custom-actions" && method === "GET") {
       json(res, 200, { status: 200, custom_actions: this.customActions });
-    } else if (endpoint === "custom-action") {
+    } else if (endpoint === "custom-action" && method === "POST") {
       const name = url.searchParams.get("name");
       json(res, 200, this.customActions.some((a) => a.name === name) ? { status: 200 } : { status: 404, message: "Custom action name not found." });
-    } else if (HTTP_CONTROL[endpoint] || CONTROL_ACTIONS.has(endpoint)) {
-      json(res, 200, { status: 200 });
+    } else if ((HTTP_CONTROL[endpoint] || CONTROL_ACTIONS.has(endpoint)) && method === "POST") {
+      const action = HTTP_CONTROL[endpoint] ?? endpoint;
+      json(res, 200, this.actionResponses.get(action) ?? { status: 200 });
     } else {
       json(res, 404, { error: "Invalid URL." });
     }
@@ -904,6 +922,11 @@ function withId(body: Record<string, unknown>, id: unknown): Record<string, unkn
 
 function redact(message: Record<string, unknown>): Record<string, unknown> {
   return "token" in message ? { ...message, token: "<redacted>" } : message;
+}
+
+function unauthorized(res: ServerResponse): void {
+  res.setHeader("WWW-Authenticate", "Bearer");
+  json(res, 401, { status: 401, reason: "not_authenticated", message: "Authentication required." });
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {

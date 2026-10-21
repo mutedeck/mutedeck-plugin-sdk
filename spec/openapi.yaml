@@ -12,13 +12,26 @@ info:
 
     ## Transports
 
-    | Transport | Address | v1 (legacy) | v2 |
+    | Transport | Address | Without authentication | With authentication |
     |---|---|---|---|
-    | HTTP | `http://<host>:3491` | `/v1/*` | `/v2/*` |
-    | WebSocket | `ws://<host>:3492`, `wss://<host>:3493` | any path other than `/v2` | path `/v2` |
+    | HTTP | `http://<host>:3491` | `/v1/*`, no token | `/v1/*` with `Authorization: Bearer <token>` |
+    | WebSocket | `ws://<host>:3492`, `wss://<host>:3493` | v1: any path other than `/v2` | v2: path `/v2` |
 
-    v1 keeps working, subject to the user's legacy policy ("Plugins without
-    authentication": allow / this computer only / block).
+    Unauthenticated use keeps working, subject to the user's legacy policy
+    ("Plugins without authentication": allow / this computer only / block).
+
+    The HTTP API is documented in the public spec,
+    `resources/mutedeck-api-spec.yaml` (served at `/swagger-ui`): optional
+    bearer auth on every `/v1` endpoint, pairing via `POST /v1/pair` +
+    `GET /v1/pair/{request_id}`, and `GET /v1/whoami`. A token sent with a
+    request must be valid (HTTP 401 otherwise); without one, the legacy
+    policy decides (401 for other devices under "this computer only", 426
+    under "block"). Responses keep v1's "HTTP 200 with the outcome in the
+    body", except those refusals and the pairing endpoints, which use real
+    HTTP status codes. An older MuteDeck answers `/v1/pair` with 404.
+
+    This file documents the WebSocket protocol; its message schemas are
+    under `components/schemas` (prefixed `Ws`).
 
     ## WebSocket v2 (not expressible in OpenAPI; read this section)
 
@@ -79,18 +92,7 @@ info:
     If no `WsWelcome` arrives within **3 seconds**, close the socket, reconnect
     to the root path, and speak v1 (`identify`). Remember "server is v1" until
     the next reconnect after a disconnect. Over HTTP, an old MuteDeck answers
-    `/v2/*` with 404 and a body of `{ "error": "Invalid URL."}`.
-
-    ## Authentication over HTTP
-
-    `/v2/*` (except `/v2/pair*`) requires `Authorization: Bearer <token>`.
-    Manual tokens created in MuteDeck Settings also work there. HTTP-only
-    plugins obtain a token through `POST /v2/pair` and poll
-    `GET /v2/pair/{request_id}`.
-
-    v2 HTTP responses use real HTTP status codes; the JSON body still carries a
-    `status` field with the same value. (v1 always answers HTTP 200 and puts the
-    outcome in the body only.)
+    `/v1/pair` with 404 and a body of `{ "error": "Invalid URL."}`.
 
     ## Limits
 
@@ -110,6 +112,15 @@ info:
     - A token belongs to one `instance_id`: a valid token sent with a
       different `instance_id` is treated as unknown (`WsWelcome pending`).
       Over HTTP the token alone identifies the client.
+    - A pending approval, and the token it produces, belong to the peer
+      address shown in the prompt. Another address presenting the same
+      `instance_id` meanwhile gets `WsDenied` (or a pair request `403`) with
+      `reason: busy`.
+    - When a token stops being valid (revoked, replaced by a new approval of
+      the same install, or evicted), sockets that authenticated with it get
+      `WsRevoked` and are closed. Sockets on a newer token stay.
+    - Tightening the legacy policy also closes v1 sockets it no longer
+      allows, including ones that only listen.
     - `keep-alive` is accepted while pending too (answered only with an
       `id`); every other action waits for the approval.
     - The server does not drop idle authenticated sockets; `keep-alive` is
@@ -135,382 +146,10 @@ tags:
 security:
   - bearerAuth: []
 
-paths:
-  /v2/pair:
-    post:
-      tags: [Pairing]
-      summary: Request approval for this client
-      description: |-
-        Shows an approval prompt in MuteDeck. Poll the returned request until it
-        is approved, denied or expired (after 120 seconds). Rate-limited per IP.
-      operationId: requestPairing
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PairRequest'
-            examples:
-              raycast:
-                value:
-                  client:
-                    id: raycast
-                    name: Raycast
-                    version: "1.3.0"
-                    host_app: raycast
-                    host_version: "1.84.2"
-                    os: mac
-                  instance_id: 1d1f8f4e-5f0a-4b5e-9c55-2f8f5a1d3c11
-      responses:
-        '202':
-          description: Prompt queued
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PairPending'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '403':
-          description: Denied recently for this instance; retry later
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PairDenied'
-        '429':
-          $ref: '#/components/responses/TooManyRequests'
-
-  /v2/pair/{request_id}:
-    get:
-      tags: [Pairing]
-      summary: Poll a pairing request
-      description: |-
-        Returns the token exactly once. After a 200 response the request is
-        removed, and later polls get 404.
-      operationId: pollPairing
-      security: []
-      parameters:
-        - in: path
-          name: request_id
-          required: true
-          schema:
-            type: string
-            pattern: '^[A-Za-z0-9_-]{16,64}$'
-      responses:
-        '200':
-          description: Approved
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PairApproved'
-        '202':
-          description: Still waiting for the user
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PairPending'
-        '403':
-          description: Denied or expired
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PairDenied'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /v2/whoami:
-    get:
-      tags: [Client]
-      summary: Describe the authenticated client
-      description: Cheap token check. Returns the client record the token belongs to.
-      operationId: whoami
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-      responses:
-        '200':
-          description: Token is valid
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/WhoAmI'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /v2/status:
-    get:
-      tags: [Meeting Status]
-      summary: Get the current meeting status
-      operationId: getStatus
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-      responses:
-        '200':
-          description: Current status
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HttpStatusResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /v2/list-custom-actions:
-    get:
-      tags: [Custom Actions]
-      summary: List configured custom actions
-      operationId: getCustomActions
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-      responses:
-        '200':
-          description: Custom actions
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CustomActionListResponse'
-        '400':
-          $ref: '#/components/responses/ActionRejected'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /v2/custom-action:
-    post:
-      tags: [Custom Actions]
-      summary: Trigger a custom action by name
-      operationId: triggerCustomAction
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-        - in: query
-          name: name
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          $ref: '#/components/responses/Ok'
-        '400':
-          $ref: '#/components/responses/ActionRejected'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /v2/mute:
-    post:
-      tags: [Meeting Controls]
-      summary: Toggle or set mute (falls back to the system microphone outside a call)
-      operationId: mute
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-        - $ref: '#/components/parameters/stateParam'
-      responses:
-        '200':
-          $ref: '#/components/responses/Ok'
-        '400':
-          $ref: '#/components/responses/ActionRejected'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /v2/video:
-    post:
-      tags: [Meeting Controls]
-      summary: Toggle or set video
-      operationId: video
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-        - $ref: '#/components/parameters/stateParam'
-      responses:
-        '200':
-          $ref: '#/components/responses/Ok'
-        '400':
-          $ref: '#/components/responses/ActionRejected'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /v2/share:
-    post:
-      tags: [Meeting Controls]
-      summary: Toggle or set screen sharing
-      operationId: share
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-        - $ref: '#/components/parameters/stateParam'
-      responses:
-        '200':
-          $ref: '#/components/responses/Ok'
-        '400':
-          $ref: '#/components/responses/ActionRejected'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /v2/record:
-    post:
-      tags: [Meeting Controls]
-      summary: Toggle or set recording
-      operationId: record
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-        - $ref: '#/components/parameters/stateParam'
-      responses:
-        '200':
-          $ref: '#/components/responses/Ok'
-        '400':
-          $ref: '#/components/responses/ActionRejected'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /v2/leave:
-    post:
-      tags: [Meeting Controls]
-      summary: Leave the active meeting
-      operationId: leave
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-      responses:
-        '200':
-          $ref: '#/components/responses/Ok'
-        '400':
-          $ref: '#/components/responses/ActionRejected'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /v2/bring-to-front:
-    post:
-      tags: [Meeting Controls]
-      summary: Bring the active meeting app to the front
-      operationId: bringToFront
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-      responses:
-        '200':
-          $ref: '#/components/responses/Ok'
-        '400':
-          $ref: '#/components/responses/ActionRejected'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /v2/background-blur:
-    post:
-      tags: [Meeting Controls]
-      summary: Toggle background blur (Teams)
-      operationId: backgroundBlur
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-      responses:
-        '200':
-          $ref: '#/components/responses/Ok'
-        '400':
-          $ref: '#/components/responses/ActionRejected'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /v2/raise-hand:
-    post:
-      tags: [Meeting Controls]
-      summary: Raise or lower your hand
-      operationId: raiseHand
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-      responses:
-        '200':
-          $ref: '#/components/responses/Ok'
-        '400':
-          $ref: '#/components/responses/ActionRejected'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /v2/toggle-chat-window:
-    post:
-      tags: [Meeting Controls]
-      summary: Open or close the chat window (Teams)
-      operationId: toggleChatWindow
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-      responses:
-        '200':
-          $ref: '#/components/responses/Ok'
-        '400':
-          $ref: '#/components/responses/ActionRejected'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /v2/react-applause:
-    post:
-      tags: [Meeting Controls]
-      summary: Send an applause reaction
-      operationId: reactApplause
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-      responses: &reactResponses
-        '200':
-          $ref: '#/components/responses/Ok'
-        '400':
-          $ref: '#/components/responses/ActionRejected'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-  /v2/react-laugh:
-    post:
-      tags: [Meeting Controls]
-      summary: Send a laugh reaction
-      operationId: reactLaugh
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-      responses: *reactResponses
-  /v2/react-like:
-    post:
-      tags: [Meeting Controls]
-      summary: Send a like reaction
-      operationId: reactLike
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-      responses: *reactResponses
-  /v2/react-love:
-    post:
-      tags: [Meeting Controls]
-      summary: Send a love reaction
-      operationId: reactLove
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-      responses: *reactResponses
-  /v2/react-wow:
-    post:
-      tags: [Meeting Controls]
-      summary: Send a surprised reaction
-      operationId: reactWow
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-      responses: *reactResponses
-  /v2/react-tada:
-    post:
-      tags: [Meeting Controls]
-      summary: Send a celebrate reaction
-      operationId: reactTada
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-      responses: *reactResponses
-  /v2/react-sad:
-    post:
-      tags: [Meeting Controls]
-      summary: Send a sad reaction (Google Meet)
-      operationId: reactSad
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-      responses: *reactResponses
-  /v2/react-thinking:
-    post:
-      tags: [Meeting Controls]
-      summary: Send a thinking reaction (Google Meet)
-      operationId: reactThinking
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-      responses: *reactResponses
-  /v2/react-dislike:
-    post:
-      tags: [Meeting Controls]
-      summary: Send a dislike reaction (Google Meet)
-      operationId: reactDislike
-      parameters:
-        - $ref: '#/components/parameters/clientHeader'
-      responses: *reactResponses
+# HTTP lives in the public spec: resources/mutedeck-api-spec.yaml (/v1 with
+# optional bearer auth, /v1/pair, /v1/whoami). This file documents the
+# WebSocket protocol only.
+paths: {}
 
 components:
   securitySchemes:
